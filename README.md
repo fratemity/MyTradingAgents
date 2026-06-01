@@ -162,6 +162,17 @@ Alternatively, copy `.env.example` to `.env` and fill in your keys:
 cp .env.example .env
 ```
 
+### Proxy Configuration
+
+For data fetching through proxies (useful in regions with restricted access),
+set proxy variables in `.env`:
+```bash
+TRADINGAGENTS_HTTP_PROXY=socks5h://127.0.0.1:1080
+TRADINGAGENTS_HTTPS_PROXY=socks5h://127.0.0.1:1080
+```
+Both `http://` and `socks5h://` schemes are supported. The `PySocks` package
+is required for SOCKS proxies.
+
 ### CLI Usage
 
 Launch the interactive CLI:
@@ -170,6 +181,56 @@ tradingagents          # installed command
 python -m cli.main     # alternative: run directly from source
 ```
 You will see a screen where you can select your desired tickers, analysis date, LLM provider, research depth, and more.
+
+Non-interactive mode (all parameters optional; omitted ones prompt interactively):
+```bash
+tradingagents analyze \
+  --ticker BABA \
+  --date 2026-05-28 \
+  --analysts market,news,fundamentals \
+  --depth 1 \
+  --llm-provider anthropic \
+  --shallow-thinker qwen3.6-plus \
+  --deep-thinker qwen3.6-plus \
+  --output-language Chinese \
+  --save-report \
+  --screen
+```
+
+| Parameter | Short | Description |
+|-----------|-------|-------------|
+| `--ticker` | `-t` | Ticker symbol (e.g., BABA, 0700.HK, 7203.T) |
+| `--date` | `-d` | Analysis date (YYYY-MM-DD) |
+| `--analysts` | `-a` | Comma-separated: `market,social,news,fundamentals` |
+| `--depth` | | Debate rounds: `1` (shallow), `3` (medium), `5` (deep) |
+| `--llm-provider` | `-p` | `openai`, `anthropic`, `qwen`, `google`, etc. |
+| `--shallow-thinker` | | Quick-thinking model name |
+| `--deep-thinker` | | Deep-thinking model name |
+| `--output-language` | `-l` | Report language (English, Chinese, etc.) |
+| `--anthropic-effort` | | Claude effort: `low`, `medium`, `high` |
+| `--google-thinking` | | Gemini thinking mode: `high`, `minimal` |
+| `--save-report` | `-s` | Auto-save report without prompting |
+| `--save-to PATH` | | Save report to a specific path |
+| `--screen` | | Auto-display report on screen |
+
+You can also configure settings via environment variables in `.env` to skip interactive prompts:
+```bash
+TRADINGAGENTS_LLM_PROVIDER=anthropic
+TRADINGAGENTS_DEEP_THINK_LLM=qwen3.6-plus
+TRADINGAGENTS_QUICK_THINK_LLM=qwen3.6-plus
+TRADINGAGENTS_OUTPUT_LANGUAGE=Chinese
+TRADINGAGENTS_TEMPERATURE=0.0
+```
+
+### Qwen 3.6 Plus via Anthropic-compatible endpoint
+
+Qwen 3.6 Plus is available as both a quick and deep thinking model when using
+the Anthropic-compatible endpoint (DashScope Coding Plan). Set this in `.env`:
+```bash
+ANTHROPIC_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic
+ANTHROPIC_API_KEY=your_dashscope_key
+```
+Then pick `qwen3.6-plus` in the CLI or pass it via `--shallow-thinker` / `--deep-thinker`.
 
 ### Markets and tickers
 
