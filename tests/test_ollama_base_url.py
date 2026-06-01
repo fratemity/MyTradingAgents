@@ -110,7 +110,42 @@ def test_cli_dropdown_default_when_unset(monkeypatch):
     assert ollama_url == "http://localhost:11434/v1"
 
 
-# ---- confirm_ollama_endpoint UX -------------------------------------------
+# ---- Anthropic provider env-var override -----------------------------------
+
+
+def test_anthropic_client_uses_env_base_url(monkeypatch):
+    """AnthropicClient.get_llm() respects ANTHROPIC_BASE_URL."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1")
+    import tradingagents.llm_clients.anthropic_client as ant_mod
+    importlib.reload(ant_mod)
+    client = ant_mod.AnthropicClient(model="claude-sonnet-4-6")
+    llm = client.get_llm()
+    assert "coding.dashscope" in str(llm.anthropic_api_url)
+
+
+def test_anthropic_explicit_base_url_overrides_env(monkeypatch):
+    """An explicit base_url wins over ANTHROPIC_BASE_URL."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env-set/v1")
+    import tradingagents.llm_clients.anthropic_client as ant_mod
+    importlib.reload(ant_mod)
+    client = ant_mod.AnthropicClient(
+        model="claude-sonnet-4-6",
+        base_url="https://explicit/v1",
+    )
+    llm = client.get_llm()
+    assert "explicit" in str(llm.anthropic_api_url)
+    assert "env-set" not in str(llm.anthropic_api_url)
+
+
+def test_anthropic_no_env_uses_sdk_default(monkeypatch):
+    """Without ANTHROPIC_BASE_URL, the client uses the SDK default."""
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    import tradingagents.llm_clients.anthropic_client as ant_mod
+    importlib.reload(ant_mod)
+    client = ant_mod.AnthropicClient(model="claude-sonnet-4-6")
+    llm = client.get_llm()
+    # LangChain's ChatAnthropic defaults to https://api.anthropic.com
+    assert "api.anthropic.com" in str(llm.anthropic_api_url)
 
 
 def test_confirm_endpoint_shows_default(monkeypatch, capsys):

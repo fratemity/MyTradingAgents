@@ -161,7 +161,6 @@ class TradingAgentsGraph:
         temperature = self.config.get("temperature")
         if temperature is not None and temperature != "":
             kwargs["temperature"] = float(temperature)
-
         return kwargs
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:

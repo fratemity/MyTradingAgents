@@ -14,7 +14,12 @@ from .symbol_utils import normalize_symbol, NoMarketDataError
 logger = logging.getLogger(__name__)
 
 
-def yf_retry(func, max_retries=3, base_delay=2.0):
+class YFRetryExhaustedError(Exception):
+    """Raised when yfinance rate-limit retries are exhausted."""
+    pass
+
+
+def yf_retry(func, max_retries=5, base_delay=5.0):
     """Execute a yfinance call with exponential backoff on rate limits.
 
     yfinance raises YFRateLimitError on HTTP 429 responses but does not
@@ -30,7 +35,10 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
                 logger.warning(f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
             else:
-                raise
+                raise YFRetryExhaustedError(
+                    f"Yahoo Finance rate limited after {max_retries + 1} attempts. "
+                    f"Please retry the analysis in a few minutes."
+                )
 
 
 def _ensure_date_column(data: pd.DataFrame) -> pd.DataFrame:

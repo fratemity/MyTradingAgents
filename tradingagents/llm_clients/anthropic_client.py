@@ -1,3 +1,4 @@
+import os
 import re
 from typing import Any, Optional
 
@@ -53,6 +54,10 @@ class AnthropicClient(BaseLLMClient):
 
         if self.base_url:
             llm_kwargs["base_url"] = self.base_url
+        else:
+            env_url = os.environ.get("ANTHROPIC_BASE_URL")
+            if env_url:
+                llm_kwargs["base_url"] = env_url
 
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:

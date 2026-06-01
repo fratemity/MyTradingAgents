@@ -25,9 +25,9 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Iterable, Optional
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +90,15 @@ def _fetch_subreddit_rss(
     post is tagged ``source="rss"`` for honest display.
     """
     url = _RSS.format(sub=sub, qs=_search_qs(ticker, limit))
-    req = Request(url, headers={"User-Agent": _UA})
     try:
-        with urlopen(req, timeout=timeout) as resp:
-            root = ET.fromstring(resp.read())
-    except (HTTPError, URLError, TimeoutError, ET.ParseError) as exc:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _UA},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+    except (requests.RequestException, ET.ParseError) as exc:
         logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
         return []
 
@@ -123,19 +127,22 @@ def _fetch_subreddit(
     timeout: float,
 ) -> list[dict]:
     url = _API.format(sub=sub, qs=_search_qs(ticker, limit))
-    req = Request(url, headers={"User-Agent": _UA, "Accept": "application/json"})
     try:
-        with urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read())
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _UA, "Accept": "application/json"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
         children = (payload.get("data") or {}).get("children") or []
         return [c.get("data", {}) for c in children if isinstance(c, dict)]
-    except (HTTPError, URLError, json.JSONDecodeError, TimeoutError) as exc:
+    except (requests.RequestException, json.JSONDecodeError) as exc:
         logger.warning(
             "Reddit JSON fetch failed for r/%s · %s: %s — falling back to RSS feed.",
             sub, ticker, exc,
         )
         return _fetch_subreddit_rss(ticker, sub, limit, timeout)
-
 
 def fetch_reddit_posts(
     ticker: str,

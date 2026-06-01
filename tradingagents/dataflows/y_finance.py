@@ -4,7 +4,7 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
 import os
-from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry, load_ohlcv, filter_financials_by_date
+from .stockstats_utils import StockstatsUtils, yf_retry, load_ohlcv, filter_financials_by_date, YFRetryExhaustedError
 from .symbol_utils import normalize_symbol, NoMarketDataError
 
 def get_YFin_data_online(
@@ -12,46 +12,48 @@ def get_YFin_data_online(
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ):
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
 
-    datetime.strptime(start_date, "%Y-%m-%d")
-    datetime.strptime(end_date, "%Y-%m-%d")
+        # Resolve broker/forex symbols to Yahoo's convention (XAUUSD+ -> GC=F).
+        canonical = normalize_symbol(symbol)
+        ticker = yf.Ticker(canonical)
 
-    # Resolve broker/forex symbols to Yahoo's convention (XAUUSD+ -> GC=F).
-    canonical = normalize_symbol(symbol)
-    ticker = yf.Ticker(canonical)
+        # Fetch historical data for the specified date range
+        data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
 
-    # Fetch historical data for the specified date range
-    data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
+        # Empty result means the symbol is unknown/delisted. Raise a typed error
+        # instead of returning prose: the routing layer turns it into a single
+        # unambiguous "no data" signal so the agent never fabricates a price.
+        if data.empty:
+            raise NoMarketDataError(
+                symbol, canonical, f"no rows between {start_date} and {end_date}"
+            )
 
-    # Empty result means the symbol is unknown/delisted. Raise a typed error
-    # instead of returning prose: the routing layer turns it into a single
-    # unambiguous "no data" signal so the agent never fabricates a price.
-    if data.empty:
-        raise NoMarketDataError(
-            symbol, canonical, f"no rows between {start_date} and {end_date}"
-        )
+        # Remove timezone info from index for cleaner output
+        if data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
 
-    # Remove timezone info from index for cleaner output
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
+        # Round numerical values to 2 decimal places for cleaner display
+        numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
+        for col in numeric_columns:
+            if col in data.columns:
+                data[col] = data[col].round(2)
 
-    # Round numerical values to 2 decimal places for cleaner display
-    numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
-    for col in numeric_columns:
-        if col in data.columns:
-            data[col] = data[col].round(2)
+        # Convert DataFrame to CSV string
+        csv_string = data.to_csv()
 
-    # Convert DataFrame to CSV string
-    csv_string = data.to_csv()
+        # Add header information; note the resolved symbol when it differs so the
+        # agent (and user) can see which instrument was actually priced.
+        label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
+        header = f"# Stock data for {label} from {start_date} to {end_date}\n"
+        header += f"# Total records: {len(data)}\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 
-    # Add header information; note the resolved symbol when it differs so the
-    # agent (and user) can see which instrument was actually priced.
-    label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
-    header = f"# Stock data for {label} from {start_date} to {end_date}\n"
-    header += f"# Total records: {len(data)}\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-    return header + csv_string
+        return header + csv_string
+    except YFRetryExhaustedError:
+        raise  # let route_to_vendor handle fallback
 
 def get_stock_stats_indicators_window(
     symbol: Annotated[str, "ticker symbol of the company"],

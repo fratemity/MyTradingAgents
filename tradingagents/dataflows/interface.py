@@ -24,7 +24,6 @@ from .alpha_vantage import (
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .symbol_utils import NoMarketDataError
-
 # Configuration and routing logic
 from .config import get_config
 
@@ -192,5 +191,4 @@ def route_to_vendor(method: str, *args, **kwargs):
     # first real error (e.g. the primary vendor's network failure).
     if first_error is not None:
         raise first_error
-
     raise RuntimeError(f"No available vendor for '{method}'")

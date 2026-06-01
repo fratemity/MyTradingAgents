@@ -17,8 +17,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
-    "TRADINGAGENTS_TEMPERATURE":          "temperature",
-}
+    "TRADINGAGENTS_TEMPERATURE":          "temperature",}
 
 
 def _coerce(value: str, reference):
@@ -39,6 +38,16 @@ def _apply_env_overrides(config: dict) -> dict:
         if raw is None or raw == "":
             continue
         config[key] = _coerce(raw, config.get(key))
+
+    # Forward proxy settings to os.environ so yfinance/requests picks them up
+    for env_var, real_env_key in [
+        ("TRADINGAGENTS_HTTP_PROXY", "HTTP_PROXY"),
+        ("TRADINGAGENTS_HTTPS_PROXY", "HTTPS_PROXY"),
+    ]:
+        raw = os.environ.get(env_var)
+        if raw:
+            os.environ[real_env_key] = raw
+
     return config
 
 
@@ -55,6 +64,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",
     "quick_think_llm": "gpt-5.4-mini",
+    # LLM request timeout in seconds. None means SDK default (~60s).
+    # Set higher (e.g. 300) for slower providers or custom endpoints.
+    "llm_timeout": None,
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a

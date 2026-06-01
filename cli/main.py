@@ -20,6 +20,10 @@ from rich.tree import Tree
 from rich import box
 from rich.align import Align
 from rich.rule import Rule
+from dotenv import load_dotenv
+
+# Load .env before any config imports so DEFAULT_CONFIG picks up env overrides
+load_dotenv()
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.graph.analyst_execution import (
@@ -257,11 +261,34 @@ def format_tokens(n):
 
 
 def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
-    # Header with welcome message
+    # Build dynamic header showing current activity / heartbeat
+    header_lines = [
+        "[bold green]Welcome to TradingAgents CLI[/bold green]",
+        "[dim]© [Tauric Research](https://github.com/TauricResearch)[/dim]",
+    ]
+    if stats_handler:
+        activity = stats_handler.get_activity()
+        if activity["current_llm"]:
+            header_lines.append(
+                f"[bold cyan]LLM[/bold cyan] [dim]calling {activity['current_llm']}[/dim]"
+            )
+        elif activity["current_tool"]:
+            header_lines.append(
+                f"[bold cyan]Tool[/bold cyan] [dim]running {activity['current_tool']}[/dim]"
+            )
+        elif activity["seconds_since_activity"] is not None:
+            sec = int(activity["seconds_since_activity"])
+            if sec > 60:
+                header_lines.append(f"[bold cyan]Idle[/bold cyan] [dim]{sec // 60}m {sec % 60}s since last activity[/dim]")
+            else:
+                header_lines.append(f"[bold cyan]Idle[/bold cyan] [dim]{sec}s since last activity[/dim]")
+        else:
+            header_lines.append("[bold cyan]Waiting[/bold cyan] [dim]for first LLM call...[/dim]")
+    header_content = "\n".join(header_lines)
+
     layout["header"].update(
         Panel(
-            "[bold green]Welcome to TradingAgents CLI[/bold green]\n"
-            "[dim]© [Tauric Research](https://github.com/TauricResearch)[/dim]",
+            header_content,
             title="Welcome to TradingAgents",
             border_style="green",
             padding=(1, 2),
@@ -988,9 +1015,222 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
-    # First get all user selections
-    selections = get_user_selections()
+def _build_selections_from_cli(
+    ticker: str | None,
+    date: str | None,
+    analysts: str | None,
+    depth: int | None,
+    llm_provider: str | None,
+    backend_url: str | None,
+    shallow_thinker: str | None,
+    deep_thinker: str | None,
+    output_language: str | None,
+    reasoning_effort: str | None,
+    anthropic_effort: str | None,
+    google_thinking: str | None,
+) -> dict:
+    """Build a partial selections dict from CLI arguments.
+
+    Returns a dict with None for any argument not provided.
+    """
+    analyst_list = None
+    if analysts:
+        raw = [a.strip().lower() for a in analysts.split(",")]
+        # Map display names and keys to AnalystType enums
+        name_map = {
+            "market": AnalystType.MARKET,
+            "social": AnalystType.SOCIAL,
+            "sentiment": AnalystType.SOCIAL,
+            "news": AnalystType.NEWS,
+            "fundamentals": AnalystType.FUNDAMENTALS,
+            "fundamental": AnalystType.FUNDAMENTALS,
+        }
+        analyst_list = []
+        for a in raw:
+            if a in name_map:
+                analyst_list.append(name_map[a])
+        if not analyst_list:
+            analyst_list = None
+
+    return {
+        "ticker": ticker.upper() if ticker else None,
+        "analysis_date": date,
+        "analysts": analyst_list,
+        "research_depth": depth,
+        "llm_provider": llm_provider.lower() if llm_provider else None,
+        "backend_url": backend_url,
+        "shallow_thinker": shallow_thinker,
+        "deep_thinker": deep_thinker,
+        "output_language": output_language,
+        "openai_reasoning_effort": reasoning_effort,
+        "anthropic_effort": anthropic_effort,
+        "google_thinking_level": google_thinking,
+    }
+
+
+def _get_interactive_selections(cli_partial: dict) -> dict:
+    """Run interactive prompts only for fields not already set by CLI.
+
+    Some prompts depend on earlier selections (e.g., model selection needs
+    the provider).  Strategy:
+    1. Fill prerequisites first (ticker, date, language)
+    2. Then provider + region
+    3. Then API key
+    4. Then analysts (needs asset_type from ticker)
+    5. Then depth
+    6. Then thinking agents (needs provider)
+    7. Then provider-specific config
+    """
+    selections = {}
+
+    # --- Step 1: Ticker ---
+    if cli_partial.get("ticker"):
+        selections["ticker"] = cli_partial["ticker"]
+        selections["asset_type"] = detect_asset_type(selections["ticker"]).value
+    else:
+        selections["ticker"] = get_ticker()
+        selections["asset_type"] = detect_asset_type(selections["ticker"]).value
+
+    # --- Step 2: Date ---
+    if cli_partial.get("analysis_date"):
+        selections["analysis_date"] = cli_partial["analysis_date"]
+    else:
+        selections["analysis_date"] = get_analysis_date()
+
+    # --- Step 3: Output language ---
+    if cli_partial.get("output_language"):
+        selections["output_language"] = cli_partial["output_language"]
+    elif os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
+        selections["output_language"] = DEFAULT_CONFIG["output_language"]
+    else:
+        selections["output_language"] = ask_output_language()
+
+    # --- Step 4: Analysts ---
+    if cli_partial.get("analysts"):
+        selections["analysts"] = cli_partial["analysts"]
+    else:
+        asset_type = AssetType(selections["asset_type"])
+        selections["analysts"] = select_analysts(asset_type)
+
+    # --- Step 5: Research depth ---
+    if cli_partial.get("research_depth"):
+        selections["research_depth"] = cli_partial["research_depth"]
+    else:
+        selections["research_depth"] = select_research_depth()
+
+    # --- Step 6: LLM provider + region ---
+    if cli_partial.get("llm_provider"):
+        selections["llm_provider"] = cli_partial["llm_provider"]
+        selections["backend_url"] = cli_partial.get("backend_url")
+        # Apply region sub-prompt for providers that need it
+        provider_lower = selections["llm_provider"].lower()
+        if provider_lower == "qwen" and not selections["backend_url"]:
+            selections["llm_provider"], selections["backend_url"] = ask_qwen_region()
+        elif provider_lower == "minimax" and not selections["backend_url"]:
+            selections["llm_provider"], selections["backend_url"] = ask_minimax_region()
+        elif provider_lower in ("glm", "glm-cn") and not selections["backend_url"]:
+            selections["llm_provider"], selections["backend_url"] = ask_glm_region()
+    else:
+        selections["llm_provider"], selections["backend_url"] = select_llm_provider()
+        provider_lower = selections["llm_provider"].lower()
+        if provider_lower == "qwen":
+            selections["llm_provider"], selections["backend_url"] = ask_qwen_region()
+        elif provider_lower == "minimax":
+            selections["llm_provider"], selections["backend_url"] = ask_minimax_region()
+        elif provider_lower == "glm":
+            selections["llm_provider"], selections["backend_url"] = ask_glm_region()
+
+    # Ollama endpoint display
+    if selections["llm_provider"] == "ollama":
+        confirm_ollama_endpoint(selections["backend_url"])
+
+    # API key check
+    ensure_api_key(selections["llm_provider"])
+
+    # --- Step 7: Thinking agents ---
+    if cli_partial.get("shallow_thinker"):
+        selections["shallow_thinker"] = cli_partial["shallow_thinker"]
+    elif os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM"):
+        selections["shallow_thinker"] = DEFAULT_CONFIG["quick_think_llm"]
+    else:
+        selections["shallow_thinker"] = select_shallow_thinking_agent(selections["llm_provider"])
+
+    if cli_partial.get("deep_thinker"):
+        selections["deep_thinker"] = cli_partial["deep_thinker"]
+    elif os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM"):
+        selections["deep_thinker"] = DEFAULT_CONFIG["deep_think_llm"]
+    else:
+        selections["deep_thinker"] = select_deep_thinking_agent(selections["llm_provider"])
+
+    # --- Step 8: Provider-specific config ---
+    provider_lower = selections["llm_provider"].lower()
+
+    if provider_lower == "google":
+        if cli_partial.get("google_thinking_level"):
+            selections["google_thinking_level"] = cli_partial["google_thinking_level"]
+        else:
+            selections["google_thinking_level"] = ask_gemini_thinking_config()
+    else:
+        selections["google_thinking_level"] = None
+
+    if provider_lower == "openai":
+        if cli_partial.get("openai_reasoning_effort"):
+            selections["openai_reasoning_effort"] = cli_partial["openai_reasoning_effort"]
+        else:
+            selections["openai_reasoning_effort"] = ask_openai_reasoning_effort()
+    else:
+        selections["openai_reasoning_effort"] = None
+
+    if provider_lower == "anthropic":
+        if cli_partial.get("anthropic_effort"):
+            selections["anthropic_effort"] = cli_partial["anthropic_effort"]
+        else:
+            selections["anthropic_effort"] = ask_anthropic_effort()
+    else:
+        selections["anthropic_effort"] = None
+
+    return selections
+
+
+def run_analysis(checkpoint: bool = False, cli_selections: dict | None = None):
+    """Run the full analysis pipeline.
+
+    Args:
+        checkpoint: Whether to enable checkpointing.
+        cli_selections: Optional dict of pre-filled selections from CLI args.
+            Missing keys will be filled via interactive prompts.
+    """
+    # Build CLI partial overrides
+    cli_partial = cli_selections or {}
+
+    # Welcome banner (always shown)
+    with open(Path(__file__).parent / "static" / "welcome.txt", "r", encoding="utf-8") as f:
+        welcome_ascii = f.read()
+
+    welcome_content = f"{welcome_ascii}\n"
+    welcome_content += "[bold green]TradingAgents: Multi-Agents LLM Financial Trading Framework - CLI[/bold green]\n\n"
+    welcome_content += "[bold]Workflow Steps:[/bold]\n"
+    welcome_content += "I. Analyst Team → II. Research Team → III. Trader → IV. Risk Management → V. Portfolio Management\n\n"
+    welcome_content += (
+        "[dim]Built by [Tauric Research](https://github.com/TauricResearch)[/dim]"
+    )
+
+    welcome_box = Panel(
+        welcome_content,
+        border_style="green",
+        padding=(1, 2),
+        title="Welcome to TradingAgents",
+        subtitle="Multi-Agents LLM Financial Trading Framework",
+    )
+    console.print(Align.center(welcome_box))
+    console.print()
+
+    # Announcements
+    announcements = fetch_announcements()
+    display_announcements(console, announcements)
+
+    # Get selections — interactive for missing CLI args
+    selections = _get_interactive_selections(cli_partial)
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -1258,35 +1498,139 @@ def run_analysis(checkpoint: bool = False):
 
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-    # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
+    # Auto-save report when --save-report is set (non-interactive mode)
+    if cli_selections.get("_save_report"):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
+        save_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+        save_path.mkdir(parents=True, exist_ok=True)
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
-            console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+            console.print(f"\n[green]Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
+    elif cli_selections.get("_save_to"):
+        # User provided an explicit save path
+        save_path = Path(cli_selections["_save_to"])
+        save_path.mkdir(parents=True, exist_ok=True)
+        try:
+            report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+            console.print(f"\n[green]Report saved to:[/green] {save_path.resolve()}")
+            console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+        except Exception as e:
+            console.print(f"[red]Error saving report: {e}[/red]")
+    else:
+        # Interactive mode — prompt to save
+        save_choice = typer.prompt("Save report?", default="Y").strip().upper()
+        if save_choice in ("Y", "YES", ""):
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+            save_path_str = typer.prompt(
+                "Save path (press Enter for default)",
+                default=str(default_path)
+            ).strip()
+            save_path = Path(save_path_str)
+            try:
+                report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+                console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+                console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+            except Exception as e:
+                console.print(f"[red]Error saving report: {e}[/red]")
 
-    # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    # Auto-display report only when --screen is explicitly set.
+    # When --save-report is used without --screen, skip display entirely.
+    if cli_selections.get("_screen"):
         display_complete_report(final_state)
+    elif cli_selections.get("_save_report") or cli_selections.get("_save_to"):
+        # Non-interactive save mode — skip display prompt
+        console.print(f"\n[dim]Use --screen to also display the report on screen.[/dim]")
+    else:
+        # Interactive mode — prompt to display
+        display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
+        if display_choice in ("Y", "YES", ""):
+            display_complete_report(final_state)
 
 
 @app.command()
 def analyze(
+    ticker: str = typer.Option(
+        None,
+        "--ticker", "-t",
+        help="Ticker symbol to analyze (e.g., BABA, 0700.HK, 7203.T)",
+    ),
+    date: str = typer.Option(
+        None,
+        "--date", "-d",
+        help="Analysis date in YYYY-MM-DD format",
+    ),
+    analysts: str = typer.Option(
+        None,
+        "--analysts", "-a",
+        help="Comma-separated analyst list: market,social,news,fundamentals",
+    ),
+    depth: int = typer.Option(
+        None,
+        "--depth",
+        help="Research depth: 1 (shallow), 3 (medium), 5 (deep)",
+    ),
+    llm_provider: str = typer.Option(
+        None,
+        "--llm-provider", "-p",
+        help="LLM provider: openai, google, anthropic, qwen, glm, deepseek, xai, ollama, openrouter, minimax, azure",
+    ),
+    backend_url: str = typer.Option(
+        None,
+        "--backend-url",
+        help="Custom backend URL for the LLM provider",
+    ),
+    shallow_thinker: str = typer.Option(
+        None,
+        "--shallow-thinker",
+        help="Model name for shallow/quick thinking agent",
+    ),
+    deep_thinker: str = typer.Option(
+        None,
+        "--deep-thinker",
+        help="Model name for deep thinking agent",
+    ),
+    output_language: str = typer.Option(
+        None,
+        "--output-language", "-l",
+        help="Report output language: English, Chinese, Japanese, Korean, etc.",
+    ),
+    reasoning_effort: str = typer.Option(
+        None,
+        "--reasoning-effort",
+        help="OpenAI reasoning effort: low, medium, high",
+    ),
+    anthropic_effort: str = typer.Option(
+        None,
+        "--anthropic-effort",
+        help="Anthropic effort level: low, medium, high",
+    ),
+    google_thinking: str = typer.Option(
+        None,
+        "--google-thinking",
+        help="Gemini thinking mode: high, minimal",
+    ),
+    save_report: bool = typer.Option(
+        False,
+        "--save-report", "-s",
+        help="Auto-save report to default path without prompting",
+    ),
+    save_to: str = typer.Option(
+        None,
+        "--save-to",
+        help="Save report to a specific path",
+    ),
+    screen: bool = typer.Option(
+        False,
+        "--screen",
+        help="Auto-display full report on screen without prompting",
+    ),
     checkpoint: bool = typer.Option(
         False,
         "--checkpoint",
@@ -1298,11 +1642,36 @@ def analyze(
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
 ):
+    """Run multi-agent LLM financial analysis.
+
+    All parameters are optional. When omitted, the CLI will prompt
+    interactively. Provide --ticker (at minimum) for non-interactive runs.
+    """
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+
+    cli_selections = _build_selections_from_cli(
+        ticker=ticker,
+        date=date,
+        analysts=analysts,
+        depth=depth,
+        llm_provider=llm_provider,
+        backend_url=backend_url,
+        shallow_thinker=shallow_thinker,
+        deep_thinker=deep_thinker,
+        output_language=output_language,
+        reasoning_effort=reasoning_effort,
+        anthropic_effort=anthropic_effort,
+        google_thinking=google_thinking,
+    )
+    # Report output control (internal keys)
+    cli_selections["_save_report"] = save_report
+    cli_selections["_save_to"] = save_to
+    cli_selections["_screen"] = screen
+
+    run_analysis(checkpoint=checkpoint, cli_selections=cli_selections)
 
 
 if __name__ == "__main__":
