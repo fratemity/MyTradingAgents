@@ -184,7 +184,7 @@ You will see a screen where you can select your desired tickers, analysis date, 
 
 Non-interactive mode (all parameters optional; omitted ones prompt interactively):
 ```bash
-tradingagents analyze \
+tradingagents \
   --ticker BABA \
   --date 2026-05-28 \
   --analysts market,news,fundamentals \
@@ -313,8 +313,8 @@ Checkpoint resume is opt-in via `--checkpoint`. When enabled, LangGraph saves st
 Per-ticker SQLite databases live at `~/.tradingagents/cache/checkpoints/<TICKER>.db` (override the base with `TRADINGAGENTS_CACHE_DIR`). Use `--clear-checkpoints` to reset all of them before a run.
 
 ```bash
-tradingagents analyze --checkpoint           # enable for this run
-tradingagents analyze --clear-checkpoints    # reset before running
+tradingagents --checkpoint           # enable for this run
+tradingagents --clear-checkpoints    # reset before running
 ```
 
 ```python
